@@ -1,0 +1,67 @@
+# Builds the Nook Android app every time you push to main.
+# The finished APK appears under Releases > "Nook (latest build)" in your GitHub repo.
+name: Build Android app
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Install and build the web app
+        run: |
+          npm ci
+          npm run build
+
+      - name: Create the Android project
+        run: |
+          npx cap add android
+          npx @capacitor/assets generate --android
+          mkdir -p android/app/src/main/res/drawable
+          cp ci/ic_stat_nook.xml android/app/src/main/res/drawable/ic_stat_nook.xml
+          sed -i "s/versionCode 1$/versionCode ${{ github.run_number }}/" android/app/build.gradle
+          sed -i "s/versionName \"1.0\"/versionName \"1.0.${{ github.run_number }}\"/" android/app/build.gradle
+          npx cap sync android
+
+      - name: Use the same signing key every time (so updates install over the old app)
+        run: |
+          mkdir -p ~/.android
+          cp ci/debug.keystore ~/.android/debug.keystore
+
+      - name: Build the APK
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon
+          cp app/build/outputs/apk/debug/app-debug.apk ../Nook.apk
+
+      - name: Keep a copy on the run page
+        uses: actions/upload-artifact@v4
+        with:
+          name: Nook-apk
+          path: Nook.apk
+
+      - name: Publish to Releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete latest --yes --cleanup-tag || true
+          gh release create latest Nook.apk --title "Nook (latest build)" --notes "Build ${{ github.run_number }} from commit ${GITHUB_SHA::7}. Download Nook.apk on your phone or tablet and install it."
